@@ -1,0 +1,224 @@
+Network Working Group                                      Bo Xilai
+Internet-Draft                                  Chinese Communist Party
+Intended status: Informational                           July 20, 2025
+
+                  The NonAuth Protocol: An Adaptive Anti-Censorship
+                        TLS Extension for Covert Authentication
+                                draft-nonauth-00
+
+Abstract
+
+   The NonAuth protocol is a new approach to circumventing network
+   censorship by leveraging the existing structure of the TLS handshake.
+   It proposes a method for a client and server to perform mutual
+   covert authentication by embedding cryptographic authentication
+   material within the seemingly random fields of the TLS ClientHello and
+   ServerHello messages. This approach, which is fully compliant with the
+   TLS protocol specification in terms of packet structure and length,
+   allows for the establishment of a secure, pre-authenticated tunnel
+   while remaining indistinguishable from standard TLS traffic to an
+   external observer. The protocol's key feature is its adaptive
+   resilience, allowing it to gracefully fail as a normal TLS connection
+   when redirected to a non-participating server, thus avoiding
+   predictable "failure modes" that can be fingerprinted by censors.
+
+Status of This Memo
+
+   This Internet-Draft is submitted in accordance with the user's
+   request for a detailed, RFC-style specification of the NonAuth
+   protocol. This memo is intended to provide a clear, technical
+   description of the protocol design. Distribution is unlimited.
+
+Table of Contents
+
+   1.  Introduction
+   2.  Terminology
+   3.  Protocol Overview
+   4.  Protocol Specification
+       4.1. ClientHello Message Generation
+       4.2. ServerHello Message Processing
+       4.3. Client's Adaptive Behavior
+   5.  Security Considerations
+   6.  IANA Considerations
+   7.  Acknowledgments
+   8.  References
+
+1. Introduction
+
+   The rise of state-level network censorship has led to the development
+   of sophisticated deep packet inspection (DPI) and traffic analysis
+   techniques. Existing circumvention protocols, while effective, often
+   introduce subtle behavioral or structural "fingerprints" that can be
+   used by censors to identify and block them.
+
+   The NonAuth protocol aims to solve this problem by introducing an
+   authentication mechanism that is cryptographically concealed within
+   the TLS handshake itself. By leveraging the `Client Random` and
+   `Server Random` fields, which are typically composed of random data,
+   the protocol achieves a level of stealth that is highly resistant to
+   statistical and pattern-based fingerprinting. The protocol's adaptive
+   design allows it to respond correctly to "redirection attacks," a
+   common censorship technique where a malicious server impersonates the
+   destination.
+
+2. Terminology
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+   document are to be interpreted as described in [RFC2119].
+
+   -   **Shared Secret:** A pre-configured cryptographic key shared
+       between the client and the proxy server.
+   -   **Covert Authentication Message (CAM):** A short, predefined
+       message used to prove the identity of the communicating parties.
+   -   **Proxy Server:** A server configured to communicate using the
+       NonAuth protocol.
+   -   **Standard Server:** A typical TLS server not configured for NonAuth.
+
+3. Protocol Overview
+
+   The NonAuth protocol operates as a thin layer on top of the standard
+   TLS 1.2 or 1.3 handshake. It performs mutual authentication by
+   embedding encrypted authentication data into the `Client Random` and
+   `Server Random` fields.
+
+   1. The client constructs a `ClientHello` message where the `Client Random`
+      field is a combination of a timestamp, a unique AEAD Nonce, and an
+      encrypted `CAM` along with its authentication tag.
+   2. The proxy server receives the `ClientHello`, validates the
+      authentication data, and if successful, responds with a `ServerHello`
+      containing a similarly-structured `Server Random`.
+   3. The client receives the `ServerHello`. If the `Server Random` is also
+      valid, it confirms it is connected to a proxy server and proceeds
+      with the TLS handshake for proxy traffic.
+   4. If the client's `ClientHello` is redirected to a standard TLS server,
+      the server will respond with a `ServerHello` containing a truly random
+      `Server Random`. The client will recognize this and gracefully fail the
+      TLS handshake, which appears to an external observer as a normal
+      TLS connection failure (e.g., due to a certificate error).
+
+4. Protocol Specification
+
+   The protocol relies on a pre-shared secret and the ChaCha20-Poly1305
+   Authenticated Encryption with Associated Data (AEAD) algorithm [RFC8439].
+   A 32-byte shared key is RECOMMENDED for security.
+
+4.1. ClientHello Message Generation
+
+   The `ClientHello` message is constructed as specified in [RFC5246].
+   The `Client Random` field (32 bytes) is structured as follows:
+
+      -   **Bytes 0-3:** A 4-byte, big-endian representation of the
+          current Unix timestamp. This serves to prevent replay attacks
+          and to provide freshness for the AEAD nonce.
+      -   **Bytes 4-15:** A 12-byte AEAD Nonce. This is a one-time value
+          generated by a Cryptographically Secure Pseudo-Random Number
+          Generator (CSPRNG).
+      -   **Bytes 16-27:** The 12-byte ciphertext of the **CAM**.
+      -   **Bytes 28-31:** The 4-byte truncated authentication tag.
+
+   The AEAD operation uses the following inputs:
+
+   -   **Key:** The 32-byte shared secret.
+   -   **Nonce:** The 12-byte Nonce from `Client Random` bytes 4-15.
+   -   **Plaintext:** The 12-byte `CAM`. This can be a fixed value
+       or a short, custom message.
+   -   **Associated Data (AD):** The TLS SNI (Server Name Indication)
+       hostname, as it is a predictable and authenticated part of the
+       `ClientHello` message.
+
+   The output of the AEAD operation is a 12-byte ciphertext and a
+   16-byte authentication tag. The tag MUST be truncated to its first
+   4 bytes and placed in the `Client Random` at bytes 28-31. The 12-byte
+   ciphertext is placed at bytes 16-27.
+
+4.2. ServerHello Message Processing
+
+   The proxy server, upon receiving a `ClientHello` message, performs the
+   following steps:
+
+   1.  Extract the Unix timestamp, AEAD Nonce, ciphertext, and truncated
+       authentication tag from the `Client Random` field.
+   2.  Extract the Associated Data (SNI hostname) from the `ClientHello`
+       extension.
+   3.  Attempt to perform an AEAD verification and decryption operation
+       using its own shared secret, the extracted Nonce, ciphertext,
+       and AD. The server MUST check the truncated authentication tag.
+
+   Based on the verification result, the server MUST take one of two
+   actions:
+
+   -   **Authentication SUCCESS:** The server has successfully
+       authenticated the client. It MUST then generate a `ServerHello`
+       message where the `Server Random` field is also constructed
+       using the same NonAuth format (timestamp, Nonce, ciphertext, tag),
+       using the same shared secret and a new, unique `CAM` for the
+       server's authentication.
+   -   **Authentication FAILURE:** The server assumes the connection is
+       from a standard TLS client or has been redirected. It MUST proceed
+       with a standard TLS handshake and generate a `Server Random`
+       composed of 32 bytes of cryptographically secure random data, as
+       per standard TLS specification.
+
+4.3. Client's Adaptive Behavior
+
+   Upon receiving the `ServerHello` message, the client performs a
+   reciprocal verification of the `Server Random` field.
+
+   1.  The client attempts to perform the AEAD verification operation
+       on the `Server Random` using its shared secret.
+   2.  If the verification is **SUCCESSFUL**, the client has confirmed
+       it is connected to a legitimate proxy server. It will proceed
+       with the TLS handshake, establish the encrypted tunnel, and
+       begin proxying traffic.
+   3.  If the verification **FAILS**, the client has detected that the
+       server is not a NonAuth proxy. It MUST NOT immediately terminate
+       the connection. Instead, it MUST proceed with the standard TLS
+       handshake as if it were a normal TLS client that encountered a
+       server with an invalid configuration. The handshake will
+       inevitably fail during key negotiation due to the mismatch
+       between the random numbers and the expected TLS state, but the
+       traffic pattern will be indistinguishable from a regular TLS
+       connection failure.
+
+5. Security Considerations
+
+   -   **Replay Attacks:** The use of a Unix timestamp and a unique
+       AEAD Nonce effectively prevents replay attacks. The server SHOULD
+       validate that the timestamp is within a reasonable window (e.g.,
+       +/- 5 minutes) to mitigate man-in-the-middle attacks where a
+       replayed `ClientHello` could be used.
+   -   **Key Management:** The security of the NonAuth protocol is
+       entirely dependent on the secrecy of the shared key. If the key
+       is compromised, the protocol offers no protection.
+   -   **Truncated Authentication Tag:** The use of a 4-byte truncated
+       authentication tag reduces the security of the Poly1305 authenticator
+       against brute-force forgery attempts. This is a design trade-off to
+       fit the authentication material within the limited space of the TLS
+       `Random` fields. A 4-byte tag offers 32 bits of security, which is
+       sufficient to deter most passive attackers but may be susceptible to
+       targeted, offline attacks.
+   -   **Implementation:** The protocol's effectiveness relies on a
+       high-quality, constant-time implementation of the AEAD algorithm
+       to prevent timing side-channel attacks.
+
+6. IANA Considerations
+
+   This document does not require any IANA actions.
+
+7. Acknowledgments
+
+   The core design concepts for this protocol were provided by an
+   individual user who has requested not to be named.
+
+8. References
+
+   [RFC2119]   Bradner, S., "Key words for use in RFCs to Indicate Requirement
+               Levels", BCP 14, RFC 2119, March 1997,
+               <http://www.rfc-editor.org/info/rfc2119>.
+   [RFC5246]   Dierks, T. and E. Rescorla, "The Transport Layer Security (TLS)
+               Protocol Version 1.2", RFC 5246, August 2008,
+               <http://www.rfc-editor.org/info/rfc5246>.
+   [RFC8439]   Nir, Y. and A. Langley, "ChaCha20 and Poly1305 for IETF Protocols",
+               RFC 8439, June 2018,
+               <http://www.rfc-editor.org/info/rfc8439>.
