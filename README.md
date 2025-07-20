@@ -102,7 +102,7 @@ By using this repository, you agree to comply with all applicable laws and to us
 
 ## License
 
-This project is licensed under the BSD-style license found in the [LICENSE](LICENSE) file.
+This project is licensed under the MIT-style license found in the [LICENSE](LICENSE) file.
 
 ---
 
